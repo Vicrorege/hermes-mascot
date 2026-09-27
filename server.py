@@ -110,8 +110,8 @@ class MascotState:
             self._done_timer_task.cancel()
 
         async def _transition_to_idle():
-            # Quick transition to idle so bubble closes and prompt clears promptly
-            await asyncio.sleep(2.0)
+            # Keep done state visible for 5s, then transition to idle
+            await asyncio.sleep(5.0)
             if self.status == "done" and not self.active:
                 self.status = "idle"
                 self.prompt = ""
@@ -244,7 +244,7 @@ async def on_agent_line(line: str):
         return
 
 async def watch_active_sessions():
-    """Poll active_sessions.json every 1s to reconcile turn end"""
+    """Poll active_sessions.json to reconcile turn state without killing prompts prematurely."""
     while True:
         try:
             if ACTIVE_SESSIONS.exists():
@@ -259,15 +259,9 @@ async def watch_active_sessions():
                     logger.info("Session became idle in active_sessions.json")
                     state.trigger_done()
                     await state.broadcast()
-                elif tg_active and not state.active:
-                    state.active = True
-                    state.status = "thinking"
-                    state.turn_start_ts = time.time()
-                    await read_db_last_prompt()
-                    await state.broadcast()
         except Exception as e:
             logger.debug("watch_active_sessions error: %s", e)
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(2.0)
 
 async def heartbeat_loop():
     while True:
