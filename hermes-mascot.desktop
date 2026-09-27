@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Hermes Mascot
+Comment=Animated Desktop Companion for Hermes Agent (TG Gateway)
+Exec=/home/timant32/.local/bin/hermes-mascot
+Icon=preferences-desktop-emoticons
+Terminal=false
+Type=Application
+Categories=Utility;Accessories;
+StartupNotify=false
