@@ -1,47 +1,143 @@
+---
+project: hermes-mascot
+owner: Vicrorege
+type: desktop
+license: MIT
+role: Разработка с нуля: интерактивный десктопный чиби-маскот на PyQt6/XWayland, мост к Telegram Gateway, многокадровый спрайтшит Codex, живой трекинг команд и очереди
+tags:
+  - hermes-engineered
+  - project
+  - type/desktop
+  - owner/vicrorege
+  - linux/wayland
+  - pyqt6
+---
+
 # Hermes Mascot 🪽
 
-Desktop companion and animated status mascot for **Hermes Agent** Telegram Gateway on Linux (Wayland / X11).
+> Настольный интерактивный чиби-маскот для CachyOS / Wayland GNOME с динамической синхронизацией активности Telegram Gateway агента Hermes, покадровой анимацией этапов и трекингом выполняемых команд.
 
-Floats in the screen corner across all virtual desktops, responds to Telegram agent activity in real-time, reacts to mouse cursor movement, and hops playfully when poked or when tasks complete.
+- **Репозиторий:** [Vicrorege/hermes-mascot](https://github.com/Vicrorege/hermes-mascot)
+- **Владелец / Хаб:** [[owners/Vicrorege|Vicrorege]]
+- **Разработка кодовой базы:** [[kb/hermes agent|Hermes Agent]] (Разработка с нуля: PyQt6 клиент, мост к Gateway, анимация спрайтов, интеграция с XWayland EWMH и SQLite3)
+- **Хосты размещения:** [[infra/Сервер home|Сервер home]] (бэкенд моста) и рабочий ноутбук CachyOS (клиент)
+- **Стек:** Python 3.12+, PyQt6 (XCB/Wayland), aiohttp, systemd, Pillow, X11 EWMH (`libX11`), SQLite3
+- **Лицензия:** MIT
 
-## Features
+---
 
-- **Real-Time Gateway Sync**: Live integration with Hermes Agent Telegram Gateway (`thinking`, `working`, `done`, `idle`).
-- **Smooth Animation States**:
-  - Grounded idle breathing cycle.
-  - Interactive hop physics on mouse click, hover poke, and task completion.
-  - Head and eye direction tracking your mouse cursor.
-  - Active review / working animation cycles during tool execution.
-  - Star particle burst celebration when your task finishes.
-- **Side Speech Bubble**:
-  - Expands horizontally to the left, allowing the mascot to sit flush against the right edge of your screen.
-  - Displays the active prompt, executing tool, elapsed time, and API turn count.
-  - Collapse / expand chevron toggle (`▶` / `◀`).
-  - Automatically hides completely during idle to stay unobtrusive.
-- **Desktop Integration**:
-  - Always-on-top window (`WindowStaysOnTopHint`).
-  - Sticky across all GNOME / Wayland virtual workspaces (`_NET_WM_DESKTOP`).
-  - Movable by dragging anywhere with the mouse.
-  - Right-click context menu: scale (60% to 100%), skins (`Codex Blue`, `Emerald`), sound alerts toggle.
+## 📌 Архитектура и функционал
 
-## Architecture
+Система состоит из двух связанных компонентов:
+1. **Серверный мост (`server.py` на `home:8455`):**
+   - Отслеживает события в логах Telegram Gateway (`gateway.log`, `agent.log`).
+   - Опрашивает базу данных сессий агента (`state.db`) в режиме read-only, извлекая аргументы исполняемых `tool_calls` (команды терминала, пути файлов, запросы поиска).
+   - Следит за файлом сессий `active_sessions.json`, гарантируя, что статус задачи остаётся активным вплоть до полного завершения работы агента.
+   - Поддерживает фоновый запуск маскота на ноутбуке по SSH (`on-demand auto-launch`).
+2. **Десктопный клиент (`mascot.py` на ноутбуке):**
+   - Рисует окно с прозрачным фоном поверх всех приложений в GNOME Wayland через XWayland (`QT_QPA_PLATFORM=xcb`).
+   - Отображает аутентичные чиби-спрайты Codex с покадровой анимацией.
+   - Выдвигает боковую карточку с деталями задачи и исполняемым шагом.
 
-1. **Server Bridge (`server.py`)**:
-   Runs on the server alongside Hermes Agent Gateway, streaming real-time status and turn events over HTTP.
-2. **Desktop Client (`mascot.py`)**:
-   Lightweight PyQt6 application running on the client desktop, loading multi-frame spritesheets.
+---
 
-## Installation & Usage
+## 🎭 Анимации и визуальные фазы
 
+Используется официальный спрайтшит чиби-робота Codex (сетка 8×9 кадров, 192×208 px на кадр):
+
+| Фаза / Этап | Ряд спрайтшита | Поведение маскота |
+|---|---|---|
+| **Idle (Покой)** | Row 0 | Спокойное дыхание на месте (6 кадров) без назойливой левитации |
+| **Search (Поиск)** | Row 1 | Ходьба с осмотром по сторонам при выполнении `search_files`, `web_search`, `web_extract` |
+| **Terminal (Команды)** | Row 7 | Энергичный бег и работа при вызовах `terminal` и `laptop_terminal` |
+| **Files (Код)** | Row 8 | Инспекция кода с рукой у подбородка при `read_file`, `write_file`, `patch` |
+| **Thinking (Размышление)** | Row 6 | Задумчивый наклон головы во время работы нейросети и вызовов LLM API |
+| **Done (Успех)** | Row 3 | Приветственные взмахи рукой и россыпь золотых ретро-звёздочек |
+| **Hop (Прыжок)** | Row 4 | Подпрыгивание при клике мыши, при переходе к новой задаче в очереди и редкие прыжки в простое |
+
+### Реакция на мышь и трекинг взгляда
+- Голова и взгляд маскота плавно смещаются за курсором мыши с экспоненциальным сглаживанием (lerp).
+- Оверлей поверх глаз отключён — отображаются чистые оригинальные эмоции спрайтшита без мерцания.
+
+---
+
+## 💬 Интерфейс плашки (Speech Bubble)
+
+- **Боковой вынос:** карточка выходит строго влево от маскота, позволяя запарковать его вплотную к правому краю экрана ноутбука.
+- **Header:** название `Hermes` + цветной бейдж статуса/этапа (с защитой от наложения текста через `elidedText`) + кнопка скрытия `▶`.
+- **User Prompt:** компактный текст текущего запроса пользователя.
+- **Active Code Block:** моноширинный блок кода с точной выполняемой командой или путём к файлу (`⚡ terminal: git push`, `📖 read_file: server.py`, `🛠️ patch: mascot.py`).
+- **Footer:** автор запроса, таймер текущего шага и счётчик API-вызовов (`👤 черепахабро⁹² • ⏱ 14s • API #3`).
+- **Progress Bar:** анимированная бегущая неоновая полоса прогресса.
+
+---
+
+## 📥 Работа с очередью (Queue Mode)
+
+- Если во время выполнения задачи в Telegram приходят новые сообщения, они фиксируются мостом через детекцию батчей шлюза (`[Telegram] Flushing text batch`) и выводятся в счётчике `📥 В очереди: N`.
+- При завершении первого запроса и старте следующего (`Queued follow-up`):
+  - По новому `message_id` в `state.db` текст задачи обновляется мгновенно.
+  - Таймер задачи сбрасывается в 0.
+  - Счётчик очереди уменьшается.
+  - Маскот совершает переходный прыжок, плашка не закрывается и не мерцает.
+- Статус `done` активируется только после полного освобождения очереди.
+
+---
+
+## ⚡ Автоматизация и управление
+
+### 1. Автозапуск по требованию (On-Demand Auto-Launch)
+Даже если маскот закрыт пользователем, серверный мост при поступлении новой задачи в Telegram мгновенно проверяет статус процесса по SSH (`pgrep -f mascot.py || hermes-mascot start`) и запускает маскота на экране ноутбука.
+
+### 2. Режим «Прятать в покое» (`auto_hide_idle`)
+Окно маскота полностью скрыто, когда нет активных задач. При появлении запроса маскот автоматически открывается, всплывает поверх окон и разворачивает плашку.
+
+### 3. Динамический хитбокс окна (`setMask`)
+- Когда плашка свёрнута или скрыта, `setMask(QRegion)` аппаратно обрезает форму окна строго по телу маскота. Вся область слева абсолютно прозрачна для мыши и не мешает кликать по приложениям и рабочему столу.
+- Перетаскивание окна работает строго по клику на самого маскота. Клик без смещения вызывает прыжок и скрытие/раскрытие плашки.
+
+---
+
+## ⚙️ Меню настроек (ПКМ по маскоту)
+
+- **🎭 Выбрать маскота:**
+  - 🪽 `Гермес (Codex Blue)` — оригинальный сине-голубой робот.
+  - 🐢 `Черепахабро (Emerald)` — изумрудно-зелёный скин.
+- **📏 Размер:** Мини (60%), Компактный (70% по умолчанию), Средний (85%), Обычный (100%).
+- **⚡ Автоматизация:**
+  - `🚀 Запускать маскота, если закрыт` (синхронизируется с мостом).
+  - `🙈 Прятать в покое (показывать по запросу)`.
+- **🔊 Звуковые сигналы:** вкл/выкл звука завершения задачи (`sound_enabled: false` по умолчанию).
+- **📌 Сбросить позицию:** возврат в правый нижний угол экрана.
+- **🔄 Переподключиться к серверу:** повторная инициализация воркера HTTP-поллинга.
+
+---
+
+## 🚀 Установка и деплой
+
+### 1. Серверный мост (`home`)
+Сервис запускается как systemd-юнит:
 ```bash
-# Launch mascot
-hermes-mascot
+# /etc/systemd/system/hermes-mascot-bridge.service
+systemctl daemon-reload
+systemctl enable --now hermes-mascot-bridge.service
 
-# Control
-hermes-mascot stop
-hermes-mascot restart
+# Проверка статуса:
+curl -s http://127.0.0.1:8455/status
 ```
 
-## License
+### 2. Клиент на ноутбуке (`CachyOS / GNOME Wayland`)
+Файлы клиента расположены в:
+- Исполняемый скрипт: `~/.local/share/hermes-mascot/mascot.py`
+- Спрайтшиты: `~/.local/share/hermes-mascot/codex_spritesheet.webp`, `turtle_spritesheet.webp`
+- Конфигурация: `~/.config/hermes-mascot/config.json`
+- Скрипт запуска: `~/.local/bin/hermes-mascot` (настраивает mutter Xwayland auth и XCB)
+- Меню приложений: `~/.local/share/applications/hermes-mascot.desktop`
 
-[MIT](LICENSE) © 2026 Vicrorege
+```bash
+# Управление клиентом:
+hermes-mascot start
+hermes-mascot stop
+hermes-mascot restart
+hermes-mascot status
+```
