@@ -43,6 +43,8 @@ DEFAULT_CONFIG = {
     "scale": 0.70,
     "pos_x": None,
     "pos_y": None,
+    "auto_hide_idle": False,
+    "auto_launch_on_query": True,
 }
 
 # Spritesheet dimensions
@@ -236,6 +238,8 @@ class MascotWindow(QWidget):
         self.skin = self.cfg.get("skin", "hermes")
         self.sound_enabled = self.cfg.get("sound_enabled", False)
         self.scale = float(self.cfg.get("scale", 0.70))
+        self.auto_hide_idle = self.cfg.get("auto_hide_idle", False)
+        self.auto_launch_on_query = self.cfg.get("auto_launch_on_query", True)
 
         # Horizontal side-bubble layout:
         # [ Speech Bubble (x=10..246) ] <--- Tail --- [ Mascot (cx=310, cy=60) ]
@@ -398,10 +402,19 @@ class MascotWindow(QWidget):
         new_active = data.get("active", False)
         new_prompt = data.get("prompt", "").strip()
 
-        # Uncollapse on new incoming task
-        if new_status in ("thinking", "working") and prev_status in ("idle", "done"):
-            self.bubble_collapsed = False
-            self.bubble_force_show = False
+        # Uncollapse & unhide on incoming task
+        if new_status in ("thinking", "working"):
+            if self.auto_hide_idle and not self.isVisible():
+                self.show()
+                self.raise_()
+                self.update_mask()
+                QTimer.singleShot(200, lambda: make_window_sticky(int(self.winId())))
+            if prev_status in ("idle", "done"):
+                self.bubble_collapsed = False
+                self.bubble_force_show = False
+        elif new_status == "idle" and self.auto_hide_idle and self.bubble_alpha < 0.05:
+            if self.isVisible():
+                self.hide()
 
         # Hop on queued task transition
         if new_active and prev_active and prev_prompt and new_prompt != prev_prompt:
@@ -503,6 +516,9 @@ class MascotWindow(QWidget):
         # Update input mask when bubble appears or disappears
         if (old_alpha < 0.05 <= self.bubble_alpha) or (self.bubble_alpha < 0.05 <= old_alpha):
             self.update_mask()
+            if self.auto_hide_idle and status == "idle" and self.bubble_alpha < 0.05:
+                if self.isVisible():
+                    self.hide()
 
         self.update()
 
@@ -639,6 +655,19 @@ class MascotWindow(QWidget):
 
         menu.addSeparator()
 
+        auto_menu = menu.addMenu("⚡ Автоматизация")
+        act_autolaunch = auto_menu.addAction("🚀 Запускать маскота, если закрыт")
+        act_autolaunch.setCheckable(True)
+        act_autolaunch.setChecked(self.state_data.get("auto_launch", self.auto_launch_on_query))
+        act_autolaunch.triggered.connect(self.toggle_server_autolaunch)
+
+        act_autohide = auto_menu.addAction("🙈 Прятать в покое (показывать по запросу)")
+        act_autohide.setCheckable(True)
+        act_autohide.setChecked(self.auto_hide_idle)
+        act_autohide.triggered.connect(self.toggle_auto_hide)
+
+        menu.addSeparator()
+
         act_sound = menu.addAction("🔊 Звуковые сигналы")
         act_sound.setCheckable(True)
         act_sound.setChecked(self.sound_enabled)
@@ -658,6 +687,31 @@ class MascotWindow(QWidget):
         act_quit.triggered.connect(QApplication.instance().quit)
 
         menu.exec(global_pos)
+
+    def toggle_server_autolaunch(self):
+        curr = self.state_data.get("auto_launch", self.auto_launch_on_query)
+        new_val = not curr
+        self.auto_launch_on_query = new_val
+        self.cfg["auto_launch_on_query"] = new_val
+        save_config(self.cfg)
+        try:
+            url = f"{self.server_url}/toggle_autolaunch?enabled={'true' if new_val else 'false'}"
+            req = urllib.request.Request(url, headers={"User-Agent": "HermesMascot/1.0"})
+            urllib.request.urlopen(req, timeout=1.5)
+        except Exception:
+            pass
+
+    def toggle_auto_hide(self):
+        self.auto_hide_idle = not self.auto_hide_idle
+        self.cfg["auto_hide_idle"] = self.auto_hide_idle
+        save_config(self.cfg)
+        if self.auto_hide_idle and self.state_data.get("status", "idle") == "idle":
+            self.hide()
+        else:
+            self.show()
+            self.raise_()
+            self.update_mask()
+            QTimer.singleShot(200, lambda: make_window_sticky(int(self.winId())))
 
     def set_skin(self, skin_name):
         self.skin = skin_name

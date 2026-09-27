@@ -66,6 +66,26 @@ def clean_prompt_text(text: str) -> str:
     return res if res else "Запрос с изображением"
 
 
+BRIDGE_CONFIG_FILE = Path("/root/projects/hermes-mascot-bridge/bridge_config.json")
+
+def load_bridge_config() -> dict:
+    if BRIDGE_CONFIG_FILE.exists():
+        try:
+            with open(BRIDGE_CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"auto_launch": True, "laptop_host": "timant32@192.168.0.132:2222"}
+
+def save_bridge_config(cfg: dict):
+    try:
+        with open(BRIDGE_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+    except Exception:
+        pass
+
+bridge_cfg = load_bridge_config()
+
 class MascotState:
     def __init__(self):
         self.status: str = "idle"  # idle, thinking, working, done
@@ -85,6 +105,7 @@ class MascotState:
         self.active: bool = False
         self.queued_count: int = 0
         self.last_user_msg_id: int = 0
+        self.auto_launch: bool = bridge_cfg.get("auto_launch", True)
         self._done_timer_task: Optional[asyncio.Task] = None
         self.subscribers: Set[asyncio.Queue] = set()
 
@@ -111,6 +132,7 @@ class MascotState:
             "last_response_time": self.last_response_time,
             "session_id": self.session_id,
             "queued_count": self.queued_count,
+            "auto_launch": self.auto_launch,
             "last_update": self.last_update_ts,
         }
 
@@ -154,6 +176,26 @@ class MascotState:
         self._done_timer_task = asyncio.create_task(_transition_to_idle())
 
 state = MascotState()
+
+async def ensure_laptop_mascot_running():
+    """If auto_launch is enabled, trigger startup on laptop if not running."""
+    if not state.auto_launch:
+        return
+    try:
+        host_parts = bridge_cfg.get("laptop_host", "timant32@192.168.0.132:2222").split(":")
+        user_host = host_parts[0]
+        port = host_parts[1] if len(host_parts) > 1 else "22"
+        cmd = "pgrep -f 'python.*mascot.py' >/dev/null || /home/timant32/.local/bin/hermes-mascot start"
+        proc = await asyncio.create_subprocess_exec(
+            "ssh", "-p", port, "-o", "ConnectTimeout=2", "-o", "BatchMode=yes",
+            user_host, cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL
+        )
+        await asyncio.wait_for(proc.wait(), timeout=3.0)
+        logger.info("Checked/ensured laptop mascot is running")
+    except Exception as e:
+        logger.debug("ensure_laptop_mascot_running error: %s", e)
 
 def format_tool_action(name: str, args: dict) -> tuple[str, str, str]:
     """Format tool into (stage, badge_label, specific_action_detail)."""
@@ -295,6 +337,7 @@ async def on_gateway_line(line: str):
             state.current_tool = None
             state.queued_count = 0
             logger.info("New task from %s: %s", user, state.prompt[:60])
+            asyncio.create_task(ensure_laptop_mascot_running())
             await state.broadcast()
         return
 
@@ -384,6 +427,7 @@ async def poll_active_tool_from_db():
                         state.stage_label = "Выполняю запрос"
                         if state.queued_count > 0:
                             state.queued_count -= 1
+                        asyncio.create_task(ensure_laptop_mascot_running())
                         await state.broadcast()
 
                 # 2. Check for active tool calls if active
@@ -458,10 +502,25 @@ async def handle_status(request: web.Request) -> web.Response:
 async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "active": state.active, "subscribers": len(state.subscribers)})
 
+async def handle_toggle_autolaunch(request: web.Request) -> web.Response:
+    val = request.query.get("enabled")
+    if val is not None:
+        state.auto_launch = val.lower() in ("true", "1", "yes")
+    else:
+        state.auto_launch = not state.auto_launch
+    bridge_cfg["auto_launch"] = state.auto_launch
+    save_bridge_config(bridge_cfg)
+    logger.info("Auto-launch setting changed to: %s", state.auto_launch)
+    await state.broadcast()
+    return web.json_response({"auto_launch": state.auto_launch}, headers={
+        "Access-Control-Allow-Origin": "*"
+    })
+
 def init_app():
     app = web.Application()
     app.router.add_get("/status", handle_status)
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/toggle_autolaunch", handle_toggle_autolaunch)
     return app
 
 async def start_background_tasks(app):
