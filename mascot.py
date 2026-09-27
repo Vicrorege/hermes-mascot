@@ -761,11 +761,13 @@ class MascotWindow(QWidget):
         painter.setPen(QPen(pen_color, 1.5))
         painter.drawPath(path)
 
-        # 1. Header: Hermes Agent + Stage Label
+        # 1. Header: Title + Status Pill + Collapse Button (Zero overlap layout)
         font_head = QFont("sans-serif", 9, QFont.Weight.Bold)
         painter.setFont(font_head)
         painter.setPen(QColor(241, 245, 249))
-        painter.drawText(int(bubble_x + 10), int(bubble_y + 20), "Hermes Agent")
+        title_text = "Hermes"
+        title_w = painter.fontMetrics().horizontalAdvance(title_text)
+        painter.drawText(int(bubble_x + 10), int(bubble_y + 20), title_text)
 
         # Collapse chevron button (▶)
         btn_rect = self.collapse_btn_rect
@@ -784,23 +786,45 @@ class MascotWindow(QWidget):
         if not self.connected:
             badge_text = "⚠ Офлайн"
             badge_fg = QColor(239, 68, 68)
+            badge_bg = QColor(239, 68, 68, 35)
         elif stage_label:
             badge_text = stage_label
             badge_fg = QColor(56, 189, 248) if status == "thinking" else QColor(251, 191, 36)
+            badge_bg = QColor(14, 165, 233, 35) if status == "thinking" else QColor(245, 158, 11, 35)
         elif status == "done":
             dur = self.state_data.get("last_response_time")
             dur_str = f" ({dur:.1f}s)" if dur else ""
             badge_text = f"✨ Готово{dur_str}"
             badge_fg = QColor(74, 222, 128)
+            badge_bg = QColor(34, 197, 94, 35)
         else:
             badge_text = "● В сети"
             badge_fg = QColor(148, 163, 184)
+            badge_bg = QColor(51, 65, 85, 40)
 
         font_badge = QFont("sans-serif", 8, QFont.Weight.DemiBold)
         painter.setFont(font_badge)
-        painter.setPen(badge_fg)
-        badge_x = int(btn_rect.x() - 8 - painter.fontMetrics().horizontalAdvance(badge_text))
-        painter.drawText(badge_x, int(bubble_y + 20), badge_text)
+        metrics_b = painter.fontMetrics()
+
+        # Available space between title and button with safe margins
+        title_end_x = bubble_x + 10 + title_w
+        max_badge_w = (btn_rect.x() - 10) - (title_end_x + 14)
+        if max_badge_w > 30:
+            badge_text = metrics_b.elidedText(badge_text, Qt.TextElideMode.ElideRight, int(max_badge_w - 12))
+            tw = metrics_b.horizontalAdvance(badge_text)
+            pill_w = tw + 10
+            pill_h = 16
+            pill_x = int(btn_rect.x() - 8 - pill_w)
+            pill_y = int(bubble_y + 8)
+
+            # Draw subtle pill background
+            painter.setPen(QPen(QColor(badge_fg.red(), badge_fg.green(), badge_fg.blue(), 70), 1))
+            painter.setBrush(badge_bg)
+            painter.drawRoundedRect(QRectF(pill_x, pill_y, pill_w, pill_h), 4.0, 4.0)
+
+            # Draw badge text inside pill
+            painter.setPen(badge_fg)
+            painter.drawText(pill_x + 5, int(bubble_y + 20), badge_text)
 
         # 2. User Prompt
         prompt = self.state_data.get("prompt", "").strip()

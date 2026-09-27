@@ -49,19 +49,19 @@ RE_TOOL_EXECUTING = re.compile(
 TOOL_STAGE_MAP = {
     # Terminal
     "terminal": ("terminal", "⚡ Терминал"),
-    "laptop_terminal": ("terminal", "💻 Терминал ноутбука"),
-    "laptop_agent": ("terminal", "💻 Агент на ноутбуке"),
+    "laptop_terminal": ("terminal", "💻 Терминал"),
+    "laptop_agent": ("terminal", "💻 Агент"),
     # Search
-    "search_files": ("search", "🔍 Поиск в файлах"),
+    "search_files": ("search", "🔍 Поиск"),
     "web_search": ("search", "🌐 Веб-поиск"),
-    "web_extract": ("search", "📄 Загрузка сайта"),
+    "web_extract": ("search", "📄 Веб"),
     "browser_exec": ("search", "🌐 Браузер"),
     # Files / Code
-    "read_file": ("files", "📖 Чтение файла"),
-    "write_file": ("files", "✍️ Запись файла"),
-    "patch": ("files", "🛠️ Редактирование кода"),
+    "read_file": ("files", "📖 Чтение"),
+    "write_file": ("files", "✍️ Запись"),
+    "patch": ("files", "🛠️ Правка"),
     # AI / Vision
-    "vision_analyze": ("thinking", "👁️ Анализ изображения"),
+    "vision_analyze": ("thinking", "👁️ Вижн"),
 }
 
 class MascotState:
