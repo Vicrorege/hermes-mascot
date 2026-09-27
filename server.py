@@ -106,6 +106,8 @@ class MascotState:
         self.queued_count: int = 0
         self.last_user_msg_id: int = 0
         self.auto_launch: bool = bridge_cfg.get("auto_launch", True)
+        self.saw_active_lease: bool = False
+        self.unseen_lease_count: int = 0
         self._done_timer_task: Optional[asyncio.Task] = None
         self.subscribers: Set[asyncio.Queue] = set()
 
@@ -336,6 +338,8 @@ async def on_gateway_line(line: str):
             state.api_call_count = 0
             state.tool_action = ""
             state.current_tool = None
+            state.saw_active_lease = False
+            state.unseen_lease_count = 0
             state.queued_count = 0
             logger.info("New task from %s: %s", user, state.prompt[:60])
             asyncio.create_task(ensure_laptop_mascot_running())
@@ -427,6 +431,8 @@ async def poll_active_tool_from_db():
                         state.turn_start_ts = time.time()
                         state.api_call_count = 0
                         state.tool_action = ""
+                        state.saw_active_lease = False
+                        state.unseen_lease_count = 0
                         state.current_stage = "thinking"
                         state.stage_label = "Выполняю запрос"
                         if state.queued_count > 0:
@@ -476,20 +482,43 @@ async def watch_active_sessions():
                     e.get("metadata", {}).get("platform") == "telegram"
                     for e in entries
                 )
-                if not tg_active and state.active:
-                    logger.info("Session lease released in active_sessions.json -> All tasks finished!")
-                    state.trigger_done()
-                    await state.broadcast()
-                elif tg_active and not state.active:
-                    state.active = True
-                    state.status = "working"
-                    state.current_stage = "thinking"
-                    state.stage_label = "Выполнение задачи"
-                    state.turn_start_ts = time.time()
-                    await state.broadcast()
+
+                now = time.time()
+                turn_age = now - state.turn_start_ts if state.turn_start_ts > 0 else 0.0
+
+                if tg_active:
+                    state.saw_active_lease = True
+                    state.unseen_lease_count = 0
+                    if not state.active:
+                        state.active = True
+                        state.status = "working"
+                        state.current_stage = "thinking"
+                        state.stage_label = "Выполнение задачи"
+                        state.turn_start_ts = now
+                        await state.broadcast()
+
+                elif state.active:
+                    # Lease not in active_sessions.json
+                    if state.saw_active_lease and turn_age > 2.0:
+                        state.unseen_lease_count += 1
+                        # Require 3 consecutive checks (~1.5s) with NO active lease AND no active tool in DB
+                        if state.unseen_lease_count >= 3:
+                            active_tool = get_active_tool_and_args()
+                            if not active_tool:
+                                logger.info(
+                                    "Session lease confirmed released (unseen=%d, age=%.1fs) -> All tasks finished!",
+                                    state.unseen_lease_count, turn_age
+                                )
+                                state.trigger_done()
+                                await state.broadcast()
+                    elif not state.saw_active_lease and turn_age > 20.0:
+                        # Orphan task fallback
+                        logger.info("Task timed out without registered lease -> Done")
+                        state.trigger_done()
+                        await state.broadcast()
         except Exception as e:
             logger.debug("watch_active_sessions error: %s", e)
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(0.5)
 
 async def heartbeat_loop():
     while True:
