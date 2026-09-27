@@ -404,14 +404,17 @@ class MascotWindow(QWidget):
 
         # Uncollapse & unhide on incoming task
         if new_status in ("thinking", "working"):
-            if self.auto_hide_idle and not self.isVisible():
+            if not self.isVisible():
                 self.show()
                 self.raise_()
+                self.activateWindow()
                 self.update_mask()
                 QTimer.singleShot(200, lambda: make_window_sticky(int(self.winId())))
             if prev_status in ("idle", "done"):
                 self.bubble_collapsed = False
                 self.bubble_force_show = False
+                self.start_jump()
+                self.raise_()
         elif new_status == "idle" and self.auto_hide_idle and self.bubble_alpha < 0.05:
             if self.isVisible():
                 self.hide()

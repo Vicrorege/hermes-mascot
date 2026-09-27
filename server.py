@@ -185,17 +185,18 @@ async def ensure_laptop_mascot_running():
         host_parts = bridge_cfg.get("laptop_host", "timant32@192.168.0.132:2222").split(":")
         user_host = host_parts[0]
         port = host_parts[1] if len(host_parts) > 1 else "22"
-        cmd = "pgrep -f 'python.*mascot.py' >/dev/null || /home/timant32/.local/bin/hermes-mascot start"
+        cmd = "/home/timant32/.local/bin/hermes-mascot start"
         proc = await asyncio.create_subprocess_exec(
             "ssh", "-p", port, "-o", "ConnectTimeout=2", "-o", "BatchMode=yes",
             user_host, cmd,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
-        await asyncio.wait_for(proc.wait(), timeout=3.0)
-        logger.info("Checked/ensured laptop mascot is running")
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=3.5)
+        out_msg = stdout.decode().strip()
+        logger.info("ensure_laptop_mascot_running result: %s", out_msg)
     except Exception as e:
-        logger.debug("ensure_laptop_mascot_running error: %s", e)
+        logger.error("ensure_laptop_mascot_running error: %s", e)
 
 def format_tool_action(name: str, args: dict) -> tuple[str, str, str]:
     """Format tool into (stage, badge_label, specific_action_detail)."""
@@ -339,6 +340,8 @@ async def on_gateway_line(line: str):
             logger.info("New task from %s: %s", user, state.prompt[:60])
             asyncio.create_task(ensure_laptop_mascot_running())
             await state.broadcast()
+        else:
+            asyncio.create_task(ensure_laptop_mascot_running())
         return
 
     if "Queued follow-up for session" in line:
@@ -350,6 +353,7 @@ async def on_gateway_line(line: str):
         state.turn_start_ts = time.time()
         state.tool_action = ""
         state.api_call_count = 0
+        asyncio.create_task(ensure_laptop_mascot_running())
         await state.broadcast()
         return
 
