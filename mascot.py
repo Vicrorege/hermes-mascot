@@ -392,14 +392,21 @@ class MascotWindow(QWidget):
     def on_status_update(self, data):
         prev_status = self.state_data.get("status", "idle")
         prev_active = self.state_data.get("active", False)
+        prev_prompt = self.state_data.get("prompt", "").strip()
         self.state_data = data
         new_status = data.get("status", "idle")
         new_active = data.get("active", False)
+        new_prompt = data.get("prompt", "").strip()
 
         # Uncollapse on new incoming task
         if new_status in ("thinking", "working") and prev_status in ("idle", "done"):
             self.bubble_collapsed = False
             self.bubble_force_show = False
+
+        # Hop on queued task transition
+        if new_active and prev_active and prev_prompt and new_prompt != prev_prompt:
+            self.start_jump()
+            self.bubble_collapsed = False
 
         # Only celebrate when whole task finishes
         if new_status == "done" and (prev_status in ("thinking", "working") or prev_active):
