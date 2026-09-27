@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
 Hermes Mascot - Official Companion for Hermes Agent (TG Gateway).
-Uses official multi-frame animated spritesheet (192x208 per frame):
-- Idle breathing cycle (Row 0: 6 frames)
-- Jump / Hop on click or idle (Row 4: 5 frames)
-- Working / Running cycle during tool calls (Row 7: 6 frames)
-- Review / Thinking cycle during reasoning (Row 8: 6 frames)
-- Waving / Greeting (Row 3: 4 frames)
-Horizontal side-bubble layout with cursor tracking and smooth hop physics.
+Authentic multi-stage animations from official Codex spritesheet:
+- Search stage (Row 1: Walk/Search)
+- Terminal stage (Row 7: Fast Work/Run)
+- Files stage (Row 8: Review/Inspect)
+- Thinking stage (Row 6: Wait/Ponder)
+- Idle stage (Row 0: Grounded Breathing)
+- Jump/Hop on poke or idle (Row 4: Jump)
+- Done (Row 3: Waving Celebration)
+Smooth cursor tracking with zero eye jitter.
 """
 
 import sys
@@ -21,7 +23,7 @@ import urllib.request
 import subprocess
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, QPoint, QRectF, QRect, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QPoint, QRectF, QThread, pyqtSignal
 from PyQt6.QtGui import (
     QPainter, QColor, QBrush, QPen, QLinearGradient,
     QFont, QPainterPath, QImage
@@ -43,16 +45,18 @@ DEFAULT_CONFIG = {
     "pos_y": None,
 }
 
-# Spritesheet specifications
+# Spritesheet dimensions
 FRAME_W = 192
 FRAME_H = 208
 
 # Animation row mapping
 ROW_IDLE = 0        # 6 frames
-ROW_WAVE = 3        # 4 frames
-ROW_JUMP = 4        # 5 frames
-ROW_WORKING = 7     # 6 frames
-ROW_THINKING = 8    # 6 frames
+ROW_SEARCH = 1      # 8 frames (Walk/Search)
+ROW_WAVE = 3        # 4 frames (Greeting/Celebration)
+ROW_JUMP = 4        # 5 frames (Jump/Hop)
+ROW_WAITING = 6     # 6 frames (Ponder/Thinking)
+ROW_WORKING = 7     # 6 frames (Fast Run/Terminal)
+ROW_REVIEW = 8      # 6 frames (Review/Files)
 
 def make_pen(color, width=1.0, cap=None):
     p = QPen(color, float(width))
@@ -187,7 +191,7 @@ class EventWorker(QThread):
 
     def run(self):
         while self.running:
-            sleep_time = 1.0
+            sleep_time = 0.5
             try:
                 status_url = f"{self.server_url}/status"
                 req = urllib.request.Request(status_url, headers={"User-Agent": "HermesMascot/1.0"})
@@ -197,10 +201,10 @@ class EventWorker(QThread):
                     self.connection_changed.emit(True)
                     self.status_updated.emit(data)
                     is_active = data.get("active", False) or data.get("status") in ("thinking", "working")
-                    sleep_time = 0.5 if is_active else 1.0
+                    sleep_time = 0.4 if is_active else 0.8
             except Exception:
                 self.connection_changed.emit(False)
-                sleep_time = 2.0
+                sleep_time = 1.5
 
             slices = int(sleep_time / 0.1)
             for _ in range(slices):
@@ -255,15 +259,18 @@ class MascotWindow(QWidget):
         self.sheet_codex = QImage(str(ASSETS_DIR / "codex_spritesheet.webp"))
 
         # Animation states
-        self.anim_frame = 0
         self.anim_t = 0.0
         self.particles = []
         self.connected = False
 
         # Hop and cursor reactivity
-        self.jump_frame = -1  # >= 0 during jump animation
+        self.jump_frame = -1
         self.jump_timer = 0.0
         self.next_idle_jump = time.time() + random.uniform(6.0, 12.0)
+        
+        # Smooth cursor tracking (damping)
+        self.target_look_x = 0.0
+        self.target_look_y = 0.0
         self.look_offset_x = 0.0
         self.look_offset_y = 0.0
 
@@ -271,6 +278,8 @@ class MascotWindow(QWidget):
         self.state_data = {
             "status": "idle",
             "active": False,
+            "current_stage": "idle",
+            "stage_label": "",
             "prompt": "",
             "user": "",
             "current_tool": None,
@@ -278,6 +287,7 @@ class MascotWindow(QWidget):
             "model": "",
             "elapsed_seconds": 0.0,
             "last_response_time": None,
+            "queued_count": 0,
         }
         self.last_status = "idle"
 
@@ -346,10 +356,12 @@ class MascotWindow(QWidget):
         new_status = data.get("status", "idle")
         new_active = data.get("active", False)
 
+        # Uncollapse on new incoming task
         if new_status in ("thinking", "working") and prev_status in ("idle", "done"):
             self.bubble_collapsed = False
             self.bubble_force_show = False
 
+        # Only celebrate when whole task finishes
         if new_status == "done" and (prev_status in ("thinking", "working") or prev_active):
             self.start_jump()
             self.spawn_stars()
@@ -400,14 +412,17 @@ class MascotWindow(QWidget):
             self.start_jump()
             self.next_idle_jump = now + random.uniform(8.0, 16.0)
 
-        # Advance jump frame (5 frames: 0, 1, 2, 3, 4)
+        # Advance jump frame (5 frames)
         if self.jump_frame >= 0:
-            # 80ms per frame
             frame_elapsed = int((now - self.jump_timer) / 0.08)
             if frame_elapsed < 5:
                 self.jump_frame = frame_elapsed
             else:
                 self.jump_frame = -1
+
+        # Smooth cursor look tracking (smooth lerp, NO jitter)
+        self.look_offset_x += (self.target_look_x - self.look_offset_x) * 0.15
+        self.look_offset_y += (self.target_look_y - self.look_offset_y) * 0.15
 
         # Particle physics
         alive_particles = []
@@ -480,18 +495,15 @@ class MascotWindow(QWidget):
         pos_base = event.position() / self.scale
         cx = 310
         cy = 60
-        # React to cursor direction!
         dx = (pos_base.x() - cx) / 16.0
         dy = (pos_base.y() - cy) / 16.0
-        self.look_offset_x = max(-3.5, min(3.5, dx))
-        self.look_offset_y = max(-2.5, min(2.5, dy))
+        self.target_look_x = max(-3.0, min(3.0, dx))
+        self.target_look_y = max(-2.0, min(2.0, dy))
 
         if self.dragging and event.buttons() & Qt.MouseButton.LeftButton:
             new_pos = event.globalPosition().toPoint() - self.drag_start_pos
             self.move(new_pos)
             event.accept()
-        else:
-            self.update()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -503,16 +515,14 @@ class MascotWindow(QWidget):
 
     def enterEvent(self, event):
         self.hovered = True
-        # Greet hop on hover
         if self.jump_frame < 0:
             self.start_jump()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self.hovered = False
-        self.look_offset_x = 0.0
-        self.look_offset_y = 0.0
-        self.update()
+        self.target_look_x = 0.0
+        self.target_look_y = 0.0
         super().leaveEvent(event)
 
     def show_context_menu(self, global_pos):
@@ -691,7 +701,7 @@ class MascotWindow(QWidget):
         painter.setPen(QPen(pen_color, 1.5))
         painter.drawPath(path)
 
-        # 1. Header
+        # 1. Header: Hermes Agent + Stage Label
         font_head = QFont("sans-serif", 9, QFont.Weight.Bold)
         painter.setFont(font_head)
         painter.setPen(QColor(241, 245, 249))
@@ -709,24 +719,22 @@ class MascotWindow(QWidget):
         chev.lineTo(btn_rect.x() + 5, btn_rect.y() + 11)
         painter.strokePath(chev, make_pen(QColor(148, 163, 184), 1.5, Qt.PenCapStyle.RoundCap))
 
-        # Status badge
-        badge_text = "● В сети"
-        badge_fg = QColor(148, 163, 184)
+        # Status badge / stage label
+        stage_label = self.state_data.get("stage_label")
         if not self.connected:
             badge_text = "⚠ Офлайн"
             badge_fg = QColor(239, 68, 68)
-        elif status == "thinking":
-            badge_text = "🧠 Думаю..."
-            badge_fg = QColor(56, 189, 248)
-        elif status == "working":
-            tool_name = self.state_data.get("current_tool") or "инструмент"
-            badge_text = f"⚙️ {tool_name}"
-            badge_fg = QColor(251, 191, 36)
+        elif stage_label:
+            badge_text = stage_label
+            badge_fg = QColor(56, 189, 248) if status == "thinking" else QColor(251, 191, 36)
         elif status == "done":
             dur = self.state_data.get("last_response_time")
             dur_str = f" ({dur:.1f}s)" if dur else ""
             badge_text = f"✨ Готово{dur_str}"
             badge_fg = QColor(74, 222, 128)
+        else:
+            badge_text = "● В сети"
+            badge_fg = QColor(148, 163, 184)
 
         font_badge = QFont("sans-serif", 8, QFont.Weight.DemiBold)
         painter.setFont(font_badge)
@@ -761,14 +769,17 @@ class MascotWindow(QWidget):
             if line2:
                 painter.drawText(int(bubble_x + 10), int(bubble_y + 55), line2)
 
-        # 3. Details Row
+        # 3. Details Row (Timing, API calls, Queue)
         api_cnt = self.state_data.get("api_call_count", 0)
         elapsed = self.state_data.get("elapsed_seconds", 0.0)
         user_name = self.state_data.get("user") or "TG"
+        queued_count = self.state_data.get("queued_count", 0)
 
         detail_text = ""
         if status in ("thinking", "working"):
             detail_text = f"👤 {user_name} • ⏱ {elapsed:.0f}s • API #{api_cnt}"
+            if queued_count > 0:
+                detail_text += f" • 📥 В очереди: {queued_count}"
         elif status == "done":
             detail_text = "💬 Ответ отправлен в Telegram"
 
@@ -798,7 +809,7 @@ class MascotWindow(QWidget):
         painter.restore()
 
     def draw_mascot(self, painter: QPainter):
-        """Draw authentic animated spritesheet mascot with hop and cursor reactivity."""
+        """Draw authentic animated spritesheet mascot with stage-specific motions."""
         painter.save()
         sheet = self.sheet_turtle if self.skin == "turtlebro" else self.sheet_codex
         if sheet.isNull():
@@ -808,54 +819,48 @@ class MascotWindow(QWidget):
         cx = 310 + self.look_offset_x
         cy_base = 60 + self.look_offset_y
 
+        stage = self.state_data.get("current_stage", "idle")
         status = self.state_data.get("status", "idle")
 
-        # Determine Row & Column from official spritesheet
+        # Pick authentic animation row based on STAGE:
         if self.jump_frame >= 0:
             # Jumping / hopping
             row = ROW_JUMP
             col = min(4, self.jump_frame)
-            cy = cy_base
-        elif status == "working":
-            # Running / working cycle (6 frames)
-            row = ROW_WORKING
-            col = int(self.anim_t * 8) % 6
-            cy = cy_base
-        elif status == "thinking":
-            # Review / thinking cycle (6 frames)
-            row = ROW_THINKING
-            col = int(self.anim_t * 4) % 6
-            cy = cy_base
         elif status == "done":
-            # Wave / celebrate (4 frames)
+            # Waving celebration!
             row = ROW_WAVE
             col = int(self.anim_t * 6) % 4
-            cy = cy_base
+        elif stage == "terminal":
+            # Fast energetic running/typing
+            row = ROW_WORKING
+            col = int(self.anim_t * 8) % 6
+        elif stage == "search":
+            # Walking and looking around
+            row = ROW_SEARCH
+            col = int(self.anim_t * 6) % 8
+        elif stage == "files":
+            # Reviewing / code inspection with hand on chin
+            row = ROW_REVIEW
+            col = int(self.anim_t * 4) % 6
+        elif stage == "thinking":
+            # Thinking / pondering
+            row = ROW_WAITING
+            col = int(self.anim_t * 4) % 6
         else:
-            # Idle breathing cycle grounded! (NO constant flying)
+            # Idle calm grounded breathing (Row 0)
             row = ROW_IDLE
             col = int(self.anim_t * 3.5) % 6
-            cy = cy_base
 
         src_rect = QRectF(float(col * FRAME_W), float(row * FRAME_H), float(FRAME_W), float(FRAME_H))
 
-        # Scale from 192x208 down to clean 68x74
         target_w = 68.0
         target_h = 74.0
-        target_rect = QRectF(cx - target_w / 2, cy - target_h / 2, target_w, target_h)
+        target_rect = QRectF(cx - target_w / 2, cy_base - target_h / 2, target_w, target_h)
 
+        # Draw the clean spritesheet frame (clean natural eyes, ZERO glitchy manual overlay!)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         painter.drawImage(target_rect, sheet, src_rect)
-
-        # Tool indicator when working
-        if status == "working":
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            tx = cx + 24
-            ty = cy - 18 + math.sin(self.anim_t * 6) * 2
-            painter.setPen(make_pen(QColor(251, 191, 36), 1.8, cap=Qt.PenCapStyle.RoundCap))
-            painter.drawLine(int(tx), int(ty - 5), int(tx - 3), int(ty))
-            painter.drawLine(int(tx - 3), int(ty), int(tx + 2), int(ty))
-            painter.drawLine(int(tx + 2), int(ty), int(tx - 1), int(ty + 5))
 
         painter.restore()
 
