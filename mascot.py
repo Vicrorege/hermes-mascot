@@ -23,10 +23,10 @@ import urllib.request
 import subprocess
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, QPoint, QRectF, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, QRectF, QThread, pyqtSignal
 from PyQt6.QtGui import (
     QPainter, QColor, QBrush, QPen, QLinearGradient,
-    QFont, QPainterPath, QImage
+    QFont, QPainterPath, QImage, QRegion
 )
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QMenu
@@ -302,9 +302,11 @@ class MascotWindow(QWidget):
         self.collapse_btn_rect = QRectF(228, 16, 16, 16)
         self.expand_btn_rect = QRectF(252, 52, 16, 18)
 
-        # Mouse dragging
-        self.dragging = False
-        self.drag_start_pos = QPoint()
+        # Mouse dragging strictly on mascot body
+        self.dragging_mascot = False
+        self.drag_has_moved = False
+        self.drag_start_global = QPoint()
+        self.drag_window_start = QPoint()
 
         # Audio cooldown
         self.last_sound_time = 0.0
@@ -320,8 +322,45 @@ class MascotWindow(QWidget):
         self.worker.connection_changed.connect(self.on_connection_change)
         self.worker.start()
 
-        # Positioning
+        # Positioning & Input Mask
         self.init_position()
+        self.update_mask()
+
+    def update_mask(self):
+        """Update the OS window input mask so clicks outside visible elements pass through."""
+        s = self.scale
+        cx = 310.0
+        cy = 60.0
+
+        # Mascot circular/rounded body region
+        mascot_rect = QRect(
+            int((cx - 36) * s),
+            int((cy - 40) * s),
+            int(74 * s),
+            int(82 * s)
+        )
+        region = QRegion(mascot_rect, QRegion.RegionType.Ellipse)
+
+        # If speech bubble is visible (alpha > 0.05), include the speech bubble + tail in mask
+        if self.bubble_alpha > 0.05:
+            bubble_rect = QRect(
+                int(10 * s),
+                int(12 * s),
+                int(248 * s),
+                int(96 * s)
+            )
+            region = region.united(QRegion(bubble_rect))
+        elif self.bubble_collapsed and (self.state_data.get("active") or self.hovered):
+            # Include the small expand chevron button
+            btn_rect = QRect(
+                int(248 * s),
+                int(48 * s),
+                int(24 * s),
+                int(26 * s)
+            )
+            region = region.united(QRegion(btn_rect))
+
+        self.setMask(region)
 
     def init_position(self):
         screen = QApplication.primaryScreen()
@@ -449,18 +488,28 @@ class MascotWindow(QWidget):
         else:
             self.bubble_target_alpha = 0.0
 
+        old_alpha = self.bubble_alpha
         diff = self.bubble_target_alpha - self.bubble_alpha
         self.bubble_alpha += diff * 0.2
+
+        # Update input mask when bubble appears or disappears
+        if (old_alpha < 0.05 <= self.bubble_alpha) or (self.bubble_alpha < 0.05 <= old_alpha):
+            self.update_mask()
 
         self.update()
 
     def mousePressEvent(self, event):
         pos_base = event.position() / self.scale
+        cx = 310.0
+        cy = 60.0
+        dist_to_mascot = math.hypot(pos_base.x() - cx, pos_base.y() - cy)
+
         if event.button() == Qt.MouseButton.LeftButton:
             # 1. Click on collapse chevron (▶)
             if self.bubble_alpha > 0.3 and self.collapse_btn_rect.contains(pos_base):
                 self.bubble_collapsed = True
                 self.bubble_force_show = False
+                self.update_mask()
                 self.update()
                 event.accept()
                 return
@@ -469,49 +518,59 @@ class MascotWindow(QWidget):
             if self.bubble_alpha < 0.3 and self.expand_btn_rect.contains(pos_base):
                 self.bubble_collapsed = False
                 self.bubble_force_show = True
+                self.update_mask()
                 self.update()
                 event.accept()
                 return
 
-            # 3. Click on mascot body -> POKE HOP!
-            cx = 310
-            cy = 60
-            if (pos_base.x() - cx)**2 + (pos_base.y() - cy)**2 < 40**2:
-                self.start_jump()
-                self.bubble_collapsed = not self.bubble_collapsed
-                self.bubble_force_show = not self.bubble_collapsed
-                self.update()
+            # 3. Hitbox for dragging / clicking is STRICTLY on the mascot body (radius 38)
+            if dist_to_mascot <= 38.0:
+                self.dragging_mascot = True
+                self.drag_has_moved = False
+                self.drag_start_global = event.globalPosition().toPoint()
+                self.drag_window_start = self.frameGeometry().topLeft()
                 event.accept()
                 return
 
-            self.dragging = True
-            self.drag_start_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            # Click elsewhere inside visible bubble -> accept without dragging
             event.accept()
+
         elif event.button() == Qt.MouseButton.RightButton:
             self.show_context_menu(event.globalPosition().toPoint())
             event.accept()
 
     def mouseMoveEvent(self, event):
         pos_base = event.position() / self.scale
-        cx = 310
-        cy = 60
+        cx = 310.0
+        cy = 60.0
         dx = (pos_base.x() - cx) / 16.0
         dy = (pos_base.y() - cy) / 16.0
         self.target_look_x = max(-3.0, min(3.0, dx))
         self.target_look_y = max(-2.0, min(2.0, dy))
 
-        if self.dragging and event.buttons() & Qt.MouseButton.LeftButton:
-            new_pos = event.globalPosition().toPoint() - self.drag_start_pos
-            self.move(new_pos)
+        if self.dragging_mascot and event.buttons() & Qt.MouseButton.LeftButton:
+            delta = event.globalPosition().toPoint() - self.drag_start_global
+            if delta.manhattanLength() > 3:
+                self.drag_has_moved = True
+                self.move(self.drag_window_start + delta)
             event.accept()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.dragging = False
-            self.cfg["pos_x"] = self.x()
-            self.cfg["pos_y"] = self.y()
-            save_config(self.cfg)
-            event.accept()
+            if self.dragging_mascot:
+                self.dragging_mascot = False
+                if self.drag_has_moved:
+                    self.cfg["pos_x"] = self.x()
+                    self.cfg["pos_y"] = self.y()
+                    save_config(self.cfg)
+                else:
+                    # Pure click on mascot without drag -> Poke hop & toggle bubble!
+                    self.start_jump()
+                    self.bubble_collapsed = not self.bubble_collapsed
+                    self.bubble_force_show = not self.bubble_collapsed
+                    self.update_mask()
+                    self.update()
+                event.accept()
 
     def enterEvent(self, event):
         self.hovered = True
@@ -606,6 +665,7 @@ class MascotWindow(QWidget):
         self.setFixedSize(self.w_width, self.w_height)
         save_config(self.cfg)
         self.reset_position()
+        self.update_mask()
         self.update()
 
     def toggle_sound(self):
