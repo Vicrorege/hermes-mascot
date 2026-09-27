@@ -280,6 +280,7 @@ class MascotWindow(QWidget):
             "active": False,
             "current_stage": "idle",
             "stage_label": "",
+            "tool_action": "",
             "prompt": "",
             "user": "",
             "current_tool": None,
@@ -826,37 +827,52 @@ class MascotWindow(QWidget):
             painter.setPen(badge_fg)
             painter.drawText(pill_x + 5, int(bubble_y + 20), badge_text)
 
-        # 2. User Prompt
+        # 2. User Prompt (compact line)
         prompt = self.state_data.get("prompt", "").strip()
         if prompt:
             font_prompt = QFont("sans-serif", 8)
             painter.setFont(font_prompt)
-            painter.setPen(QColor(203, 213, 225))
-
-            metrics = painter.fontMetrics()
+            painter.setPen(QColor(148, 163, 184))
+            metrics_p = painter.fontMetrics()
             max_line_w = bubble_w - 20
-            line1 = prompt
-            line2 = ""
+            prompt_single = metrics_p.elidedText(prompt, Qt.TextElideMode.ElideRight, int(max_line_w))
+            painter.drawText(int(bubble_x + 10), int(bubble_y + 38), prompt_single)
 
-            if metrics.horizontalAdvance(prompt) > max_line_w:
-                words = prompt.split()
-                cur = ""
-                idx = 0
-                while idx < len(words) and metrics.horizontalAdvance(cur + " " + words[idx]) < max_line_w:
-                    cur += (" " if cur else "") + words[idx]
-                    idx += 1
-                line1 = cur
-                rest = " ".join(words[idx:])
-                line2 = metrics.elidedText(rest, Qt.TextElideMode.ElideRight, int(max_line_w))
+        # 3. Active Tool Command / File / Action Box (Telegram style)
+        tool_action = self.state_data.get("tool_action", "").strip()
+        if status in ("thinking", "working") and not (status == "done"):
+            box_x = int(bubble_x + 8)
+            box_y = int(bubble_y + 46)
+            box_w = int(bubble_w - 16)
+            box_h = 20
 
-            painter.drawText(int(bubble_x + 10), int(bubble_y + 40), line1)
-            if line2:
-                painter.drawText(int(bubble_x + 10), int(bubble_y + 55), line2)
+            # Dark code container
+            painter.setPen(QPen(QColor(56, 189, 248, 40), 1))
+            painter.setBrush(QColor(2, 6, 23, 200))
+            painter.drawRoundedRect(QRectF(box_x, box_y, box_w, box_h), 4.0, 4.0)
 
-        # 3. Details Row (Timing, API calls, Queue)
+            font_code = QFont("monospace", 7, QFont.Weight.Medium)
+            font_code.setStyleHint(QFont.StyleHint.Monospace)
+            painter.setFont(font_code)
+            metrics_c = painter.fontMetrics()
+
+            display_text = tool_action if tool_action else "Обдумывание ответа..."
+            display_text = metrics_c.elidedText(display_text, Qt.TextElideMode.ElideRight, int(box_w - 12))
+
+            color_code = QColor(56, 189, 248) if stage in ("terminal", "files") else QColor(251, 191, 36)
+            painter.setPen(color_code)
+            painter.drawText(box_x + 6, box_y + 14, display_text)
+
+        elif status == "done":
+            font_done = QFont("sans-serif", 8, QFont.Weight.Medium)
+            painter.setFont(font_done)
+            painter.setPen(QColor(74, 222, 128))
+            painter.drawText(int(bubble_x + 10), int(bubble_y + 58), "✓ Ответ отправлен в Telegram")
+
+        # 4. Details Row (Timing, API calls, Queue)
         api_cnt = self.state_data.get("api_call_count", 0)
         elapsed = self.state_data.get("elapsed_seconds", 0.0)
-        user_name = self.state_data.get("user") or "TG"
+        user_name = self.state_data.get("user") or "черепахабро⁹²"
         queued_count = self.state_data.get("queued_count", 0)
 
         detail_text = ""
@@ -865,13 +881,15 @@ class MascotWindow(QWidget):
             if queued_count > 0:
                 detail_text += f" • 📥 В очереди: {queued_count}"
         elif status == "done":
-            detail_text = "💬 Ответ отправлен в Telegram"
+            dur = self.state_data.get("last_response_time")
+            dur_s = f"{dur:.1f}s" if dur else f"{elapsed:.0f}s"
+            detail_text = f"👤 {user_name} • Завершено за {dur_s}"
 
         if detail_text:
             font_det = QFont("sans-serif", 7)
             painter.setFont(font_det)
             painter.setPen(QColor(100, 116, 139))
-            painter.drawText(int(bubble_x + 10), int(bubble_y + 75), detail_text)
+            painter.drawText(int(bubble_x + 10), int(bubble_y + 80), detail_text)
 
         # 4. Animated progress bar
         if status in ("thinking", "working"):

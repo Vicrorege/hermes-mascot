@@ -69,6 +69,7 @@ class MascotState:
         self.status: str = "idle"  # idle, thinking, working, done
         self.current_stage: str = "idle"  # idle, thinking, search, terminal, files
         self.stage_label: str = ""
+        self.tool_action: str = ""
         self.prompt: str = ""
         self.user: str = ""
         self.current_tool: Optional[str] = None
@@ -96,6 +97,7 @@ class MascotState:
             "active": self.active,
             "current_stage": self.current_stage,
             "stage_label": self.stage_label,
+            "tool_action": self.tool_action,
             "prompt": self.prompt,
             "user": self.user,
             "current_tool": self.current_tool,
@@ -281,6 +283,128 @@ def get_latest_user_prompt() -> str:
         logger.debug("get_latest_user_prompt error: %s", e)
     return ""
 
+def format_tool_action(name: str, args: dict) -> tuple[str, str, str]:
+    """Format tool into (stage, badge_label, specific_action_detail)."""
+    if name in ("terminal", "laptop_terminal"):
+        cmd = args.get("command", "").strip()
+        cmd_first = cmd.splitlines()[0] if cmd else ""
+        if len(cmd_first) > 65:
+            cmd_first = cmd_first[:62] + "..."
+        icon = "💻 " if name == "laptop_terminal" else "⚡ "
+        return "terminal", f"{icon}{name}", cmd_first
+
+    elif name in ("read_file", "write_file", "patch"):
+        path = args.get("path", "")
+        short_path = path
+        for prefix in ("/root/projects/", "/root/.hermes/", "/root/", "/home/timant32/"):
+            if short_path.startswith(prefix):
+                short_path = short_path[len(prefix):]
+                break
+        if len(short_path) > 50:
+            short_path = "..." + short_path[-47:]
+        icons = {"read_file": "📖 ", "write_file": "✍️ ", "patch": "🛠️ "}
+        return "files", f"{icons.get(name, '📄 ')}{name}", short_path
+
+    elif name == "search_files":
+        pat = args.get("pattern", "")
+        return "search", "🔍 search_files", f"'{pat}'"
+
+    elif name == "web_search":
+        q = args.get("query", "")
+        return "search", "🌐 web_search", f"'{q}'"
+
+    elif name == "web_extract":
+        urls = args.get("urls", [])
+        u = urls[0] if urls else ""
+        return "search", "📄 web_extract", u[:45]
+
+    elif name == "vision_analyze":
+        return "thinking", "👁️ vision_analyze", "Анализ изображения"
+
+    elif name in ("skill_view", "skill_manage"):
+        op_name = args.get("name") or (args.get("operations", [{}])[0].get("name") if args.get("operations") else "")
+        return "files", f"🧩 {name}", str(op_name)
+
+    return "working", f"⚙️ {name}", str(args)[:45]
+
+def get_active_tool_and_args() -> Optional[tuple[str, str, str]]:
+    """Inspect state.db for currently uncompleted tool call."""
+    try:
+        if not STATE_DB.exists():
+            return None
+        con = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True)
+        cur = con.cursor()
+        cur.execute('''
+            SELECT m.id, m.tool_calls 
+            FROM messages m
+            WHERE m.tool_calls IS NOT NULL AND m.role = 'assistant'
+            ORDER BY m.id DESC LIMIT 1
+        ''')
+        row = cur.fetchone()
+        if not row:
+            con.close()
+            return None
+        ast_id, tool_calls_json = row
+        calls = json.loads(tool_calls_json)
+
+        cur.execute('''
+            SELECT tool_call_id FROM messages 
+            WHERE role = 'tool' AND id > ?
+        ''', (ast_id,))
+        completed_ids = set(r[0] for r in cur.fetchall())
+        con.close()
+
+        for c in calls:
+            cid = c.get("id")
+            if cid not in completed_ids:
+                fn = c.get("function", {})
+                name = fn.get("name")
+                args_raw = fn.get("arguments", "{}")
+                args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                return format_tool_action(name, args)
+        return None
+    except Exception as e:
+        logger.debug("get_active_tool_and_args error: %s", e)
+        return None
+
+async def poll_active_tool_from_db():
+    """Poll state.db for currently executing tool and its live arguments."""
+    while True:
+        try:
+            if state.active and STATE_DB.exists():
+                if not state.prompt:
+                    p = get_latest_user_prompt()
+                    if p:
+                        state.prompt = p
+                        state.user = "черепахабро⁹²"
+                tool_info = get_active_tool_and_args()
+                if tool_info:
+                    stage, badge, action_text = tool_info
+                    changed = False
+                    if state.current_stage != stage:
+                        state.current_stage = stage
+                        changed = True
+                    if state.stage_label != badge:
+                        state.stage_label = badge
+                        changed = True
+                    if state.tool_action != action_text:
+                        state.tool_action = action_text
+                        changed = True
+                    if state.status != "working":
+                        state.status = "working"
+                        changed = True
+                    if changed:
+                        await state.broadcast()
+                else:
+                    if state.tool_action != "Обдумывание...":
+                        state.current_stage = "thinking"
+                        state.stage_label = f"🧠 API #{state.api_call_count}" if state.api_call_count else "🧠 Думаю..."
+                        state.tool_action = "Обдумывание ответа..."
+                        await state.broadcast()
+        except Exception as e:
+            logger.debug("poll_active_tool_from_db error: %s", e)
+        await asyncio.sleep(0.3)
+
 async def watch_active_sessions():
     """Ground truth for session liveness."""
     while True:
@@ -339,10 +463,11 @@ async def start_background_tasks(app):
     app["gw_task"] = asyncio.create_task(tail_log(GATEWAY_LOG, on_gateway_line))
     app["agent_task"] = asyncio.create_task(tail_log(AGENT_LOG, on_agent_line))
     app["session_task"] = asyncio.create_task(watch_active_sessions())
+    app["tool_db_task"] = asyncio.create_task(poll_active_tool_from_db())
     app["heartbeat_task"] = asyncio.create_task(heartbeat_loop())
 
 async def cleanup_background_tasks(app):
-    for key in ("gw_task", "agent_task", "session_task", "heartbeat_task"):
+    for key in ("gw_task", "agent_task", "session_task", "tool_db_task", "heartbeat_task"):
         task = app.get(key)
         if task:
             task.cancel()
